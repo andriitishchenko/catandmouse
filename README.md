@@ -1,2 +1,5 @@
 # catandmouse
-test game
+Game
+
+
+https://andriitishchenko.github.io/catandmouse/
