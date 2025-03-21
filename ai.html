@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Cat and Mouse Game</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+
+        canvas {
+            border: 2px solid black;
+        }
+
+        button {
+            margin: 10px;
+            padding: 10px;
+            font-size: 16px;
+        }
+
+        #customValue {
+            width: 30px;
+        }
+    </style>
+    <script src="brain.js"></script>
+</head>
+
+<body>
+    <div>
+        <button id="playAsCat">Play as Cat</button>
+        <button id="playAsMouse">Play as Mouse</button>
+    </div>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    <div id="status">Move Count: 0</div>
+    <div id="confirmation"></div>
+    <div>
+        <!-- Кнопки -->
+        <button id="downloadBtn">Download JSON</button>
+        <input type="file" id="uploadBtn" accept=".json">
+    </div>
+
+
+    <script>
+        class Game {
+            /**
+             * Game constructor.
+             * @param {canvas} canvas - Draw canvas
+             * @callback updateUIfn - stats update callback, fn(Game)
+             * @callback bestMoveFn - custom move detection callback, fn(current, opponent, isCat)
+             * @callback logMoveFn - move logger callback, fn(isCatTurn, oldCatPosition, oldMousePosition, selectedPosition, isCaught)
+             */
+            constructor(canvas, updateUIfn, bestMoveFn, logMoveFn) {
+                this.canvas = canvas;
+                this.callbackUpdate = updateUIfn;
+                this.bestMoveCustom = bestMoveFn;
+                this.logMoveFn = logMoveFn;
+
+                this.ctx = canvas.getContext('2d');
+
+                this.catPosition = 5;
+                this.mousePosition = 2;
+                this.isCatTurn = true;
+                this.moveCount = 0;
+                this.isCatPlayer = true;
+
+                // radius of the circle (game field) 
+                this.radius = Math.min(canvas.width, canvas.height) * 0.45;
+
+                // actual points coordinates
+                this.points = [];
+
+                //generatl connections rules
+                //     1
+                //  /  |  \
+                // 5   0   2
+                //  \ / \ /    
+                //   4 _ 3
+                this.connections = [
+                    [1, 3, 4], // means 0->1, 0->3, 0->4
+                    [0, 2, 5], // means 1->0, 1->2, 1->5
+                    [1, 3],
+                    [0, 2, 4],
+                    [0, 3, 5],
+                    [1, 4],
+                ];
+                // pairs of points for drawing lines, so each line will be drown only once
+                this.pairs = [];
+
+                this.connections.forEach((value, i) => {
+                    value.forEach((bone) => {
+                        let min = Math.min(i, bone);
+                        let max = Math.max(i, bone);
+
+                        if (this.pairs.find(p => p[0] === min && p[1] === max)) {
+                            return;
+                        }
+                        this.pairs.push([min, max]);
+                    });
+                });
+
+                this.generatePoints();
+                this.bindEvents();
+                this.resetGame(true);
+            }
+
+            generatePoints() {
+                const ciclePoints = 5;
+                const angleShift = Math.random() * Math.PI * 2;
+                this.points = [];
+                this.points.push({ x: this.canvas.width / 2, y: this.canvas.height / 2 }); //center point 0
+                for (let i = 1; i <= ciclePoints; i++) {
+                    const angle = (2 * Math.PI * i) / ciclePoints + angleShift;
+                    const x = Math.cos(angle) * this.radius + this.canvas.width / 2;
+                    const y = Math.sin(angle) * this.radius + this.canvas.height / 2;
+                    this.points.push({ x, y });
+                }
+            }
+
+            bindEvents() {
+                document.getElementById('playAsCat').addEventListener('click', () => this.setPlayerMode(true));
+                document.getElementById('playAsMouse').addEventListener('click', () => this.setPlayerMode(false));
+
+                this.canvas.addEventListener('click', this.handleClick.bind(this));
+                this.canvas.addEventListener('touchstart', this.handleTouch.bind(this));
+            }
+
+            setPlayerMode(isCatPlayer) {
+                this.resetGame(isCatPlayer);
+            }
+
+            handleTouch(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                this.handleClick({ clientX: touch.clientX, clientY: touch.clientY });
+            }
+
+            handleClick(e) {
+                const { left, top } = this.canvas.getBoundingClientRect();
+                const { clientX, clientY } = { clientX: e.clientX - left, clientY: e.clientY - top };
+                const clickedPoint = this.points.findIndex(p =>
+                    Math.hypot(p.x - clientX, p.y - clientY) <= 30
+                );
+
+                if (clickedPoint !== -1 && this.connections[this.currentPosition()].includes(clickedPoint)) {
+                    this.moveCharacter(clickedPoint);
+                }
+            }
+
+            draw() {
+                this.canvas.width += 0;
+                this.ctx.strokeStyle = 'black';
+                this.ctx.lineWidth = 3;
+
+                for (const item of this.pairs) {
+                    const indexA = item[0];
+                    const indexB = item[1];
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.points[indexA].x, this.points[indexA].y);
+                    this.ctx.lineTo(this.points[indexB].x, this.points[indexB].y);
+                    this.ctx.stroke();
+                }
+
+                this.points.forEach((point, index) => {
+                    this.ctx.beginPath();
+                    this.ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
+                    this.ctx.fillStyle = 'black';
+                    this.ctx.fill();
+
+                    this.ctx.font = '10px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+                    this.ctx.fillText(index, point.x - 15, point.y + 10);
+
+                    const emoji = index === this.catPosition ? '🐱' : index === this.mousePosition ? '🐭' : '';
+                    if (emoji) {
+                        this.ctx.font = '44px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+                        this.ctx.fillText(emoji, point.x - 15, point.y + 10);
+                    }
+                });
+            }
+
+            resetGame(isCatPlayer) {
+                this.catPosition = 5;
+                this.mousePosition = 2;
+                this.isCatTurn = true;
+                this.moveCount = 0;
+                this.isCatPlayer = isCatPlayer;
+                this.generatePoints();
+                this.draw();
+                if (!this.isCurrentPlayer()) this.autoMove();
+            }
+
+            currentPosition() {
+                return this.isCatTurn ? this.catPosition : this.mousePosition;
+            }
+
+            moveCharacter(selectedPosition) {
+                let oldCatPosition = this.catPosition;
+                let oldMousePosition = this.mousePosition;
+
+
+                //validate move
+                if (!this.connections[this.currentPosition()].includes(selectedPosition)) {
+                    if (!this.isCurrentPlayer()) this.autoMove(); //if automove invalid - try again
+                    return;
+                }
+
+                if (this.isCatTurn) {
+                    this.moveCount++;
+                    this.callbackUpdate(this);
+                    this.catPosition = selectedPosition;
+                } else {
+                    this.mousePosition = selectedPosition;
+                }
+
+                if (this.catPosition === this.mousePosition) {
+                    logMove(this.isCatTurn, oldCatPosition, oldMousePosition, selectedPosition, true);
+                    alert('The mouse is caught!\nMove count: ' + this.moveCount);
+                    this.callbackUpdate(this);
+                    this.resetGame(this.isCatPlayer);
+                    return;
+                }
+
+                logMove(this.isCatTurn, oldCatPosition, oldMousePosition, selectedPosition, false);
+
+                this.isCatTurn = !this.isCatTurn;
+                if (!this.isCurrentPlayer()) {
+                    (async () => {
+                        this.autoMove();
+                    })();
+                }
+
+                this.draw();
+            }
+
+            logMove(isCatTurn, oldCatPosition, oldMousePosition, selectedPosition, isCaught) {
+                if (this.logMoveFn) {
+                    this.logMoveFn(isCatTurn, oldCatPosition, oldMousePosition, selectedPosition, isCaught);
+                }
+            }
+
+            async autoMove() {
+                const current = this.currentPosition();
+                const opponent = this.isCatTurn ? this.mousePosition : this.catPosition;
+                const options = this.connections[current];
+                const move = await this.bestMove(current, opponent, this.isCatTurn);
+                this.moveCharacter(move);
+            }
+
+            distance(pointA, pointB) {
+                const dx = pointA.x - pointB.x;
+                const dy = pointA.y - pointB.y;
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+
+            shuffleArray(array) {
+                for (let i = array.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [array[i], array[j]] = [array[j], array[i]];
+                }
+            }
+
+            isCurrentPlayer() {
+                return (this.isCatTurn && this.isCatPlayer) || (!this.isCatTurn && !this.isCatPlayer);
+            }
+
+            // This function control bot brains.
+            // args: 
+            //       current - current position of the character
+            //       opponent - position of the opponent
+            //       aggressive - if true, the character will try to catch the opponent
+            async bestMove(current, opponent, aggressive) {
+                if (this.bestMoveCustom) {
+                    let move = await this.bestMoveCustom(current, opponent, aggressive);
+                    return move;
+                }
+
+                let options = this.connections[current].slice(); //connections is a graph
+                this.shuffleArray(options);
+
+                if (aggressive) {
+                    options.sort((a, b) => {
+                        const distA = this.distance(this.points[a], this.points[opponent]);
+                        const distB = this.distance(this.points[b], this.points[opponent]);
+
+                        // catch if possible!
+                        if (this.connections[current].includes(opponent)) {
+                            if (a === opponent) return -1;
+                            if (b === opponent) return 1;
+                            return 0;
+                        }
+
+                        if ([0, 3, 4].includes(opponent) && [0, 3, 4].includes(a)) return -1;
+                        if ([0, 3, 4].includes(opponent) && [0, 3, 4].includes(b)) return 1;
+
+                        return distA - distB;
+                    });
+                } else {
+                    options.sort((a, b) => {
+                        const distA = this.distance(this.points[a], this.points[opponent]);
+                        const distB = this.distance(this.points[b], this.points[opponent]);
+
+                        // Run if possible!
+                        if (this.connections[opponent].includes(a)) return 1;
+                        if (this.connections[opponent].includes(b)) return -1;
+
+                        return distB - distA;
+                    });
+                }
+
+                return options[0];
+            }
+        } // Game }
+
+        
+        function logMove(isCatTurn, oldCatPosition, oldMousePosition, selectedPosition, isCaught) {
+            console.log(
+                `${isCatTurn ? 'Cat' : 'Mouse'} moved from ${isCatTurn ? oldCatPosition : oldMousePosition} to ${selectedPosition}, Catched: ${isCaught}`
+            );
+
+            // if (isCatTurn && isCaught) {
+            //     trainingData.push({
+            //         input: [1, oldCatPosition, oldMousePosition],
+            //         output: [selectedPosition]
+            //     });
+            // }
+            // if (!isCatTurn && !isCaught) {
+            //     trainingData.push({
+            //         input: [0, oldMousePosition, oldCatPosition],
+            //         output: [selectedPosition]
+            //     });
+            // }
+        }
+
+        function bestMove(current, opponent, isCat) {
+            // custom bot logic
+            let random = Math.floor(Math.random() * 6);
+
+            if (!IS_MODEL_READY) {
+                return random;
+            }
+
+            const predict = AI.run([isCat ? 0 : 1, current, opponent]);            
+            const output = parseInt(Object.keys(predict).reduce((max, key) => 
+                predict[key] > predict[max] ? key : max
+            ));
+
+
+            // comment this to confirm model's move
+            return Promise.resolve(output);
+            //
+            
+
+            // move confirmation 
+            const confirmationDiv = document.getElementById("confirmation");
+            confirmationDiv.innerHTML = `
+                <div>
+                    <p>Suggested move: ${output}. Accept?</p>
+                    <button id="okButton">OK</button> or 
+                    <input type="number" id="customValue" value="${output}" min="0" max="5" style="display: inline;" placeholder="Point Index">
+                    <button id="submitButton" style="display: inline;">Send</button>
+                </div>`;
+
+            return new Promise(resolve => {
+                document.getElementById("okButton").onclick = () => {
+                    confirmationDiv.innerHTML = '';
+                    resolve(output);
+                };
+
+                document.getElementById("submitButton").onclick = () => {
+                    const customValue = parseInt(document.getElementById("customValue").value);
+                    confirmationDiv.innerHTML = '';
+                    if (!isNaN(customValue) && customValue >= 0 && customValue <= 5) {
+                        resolve(customValue);
+                    }
+                };
+            });
+        }
+
+
+        function updateUI(obj) {
+            statusEL.textContent = `Move Count: ${obj.moveCount}`;
+        }
+
+        // 
+        function downloadJSON() {
+            const blob = new Blob([JSON.stringify(AI.toJSON(), null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'data_model.json';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 
+        function uploadJSON(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const content = e.target.result;
+                try {
+                    const json = JSON.parse(content);
+                    AI.fromJSON(json);
+                    IS_MODEL_READY = true;
+                    game.bestMoveCustom = bestMove;
+                    alert("Model applied");
+
+                } catch (error) {
+                    alert('Error while parse JSON');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        document.getElementById('downloadBtn').addEventListener('click', downloadJSON);
+        document.getElementById('uploadBtn').addEventListener('change', uploadJSON);
+
+
+
+        const canvas = document.getElementById('gameCanvas');
+        const statusEL = document.getElementById('status');
+
+        let IS_MODEL_READY = false;
+
+        const AI = new brain.NeuralNetwork();
+        let trainingData = [];
+
+        const game = new Game(canvas, updateUI, null, logMove);
+
+    </script>
+</body>
+
+</html>
